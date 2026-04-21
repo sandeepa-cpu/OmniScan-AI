@@ -1,0 +1,5 @@
+aiohttp>=3.9
+requests>=2.31
+rich>=13.7
+beautifulsoup4>=4.12
+fpdf2>=2.7
