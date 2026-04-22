@@ -42,12 +42,14 @@ class XSSScanner:
         timeout: aiohttp.ClientTimeout | None = None,
         extra_payloads: Sequence[str] = (),
         concurrency: int = 10,
+        extra_headers: dict[str, str] | None = None,
     ) -> None:
         self._timeout = timeout or aiohttp.ClientTimeout(total=20)
         self._extra_payloads: tuple[str, ...] = tuple(
             p for p in extra_payloads if isinstance(p, str) and p
         )
         self._concurrency = max(1, concurrency)
+        self._extra_headers: dict[str, str] = dict(extra_headers or {})
 
     def _effective_payloads(self) -> tuple[str, ...]:
         seen: set[str] = set()
@@ -192,6 +194,7 @@ class XSSScanner:
         headers = {
             "User-Agent": "OmniScan-AI/1.0 (security research)",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            **self._extra_headers,
         }
 
         def _advance() -> None:

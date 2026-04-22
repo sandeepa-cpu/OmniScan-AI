@@ -292,9 +292,11 @@ class SecretFinder:
         self,
         timeout: aiohttp.ClientTimeout | None = None,
         concurrency: int = 12,
+        extra_headers: dict[str, str] | None = None,
     ) -> None:
         self._timeout = timeout or aiohttp.ClientTimeout(total=30)
         self._concurrency = max(1, concurrency)
+        self._extra_headers: dict[str, str] = dict(extra_headers or {})
 
     @staticmethod
     def _absolute_url(base: str, href: str) -> str:
@@ -426,6 +428,7 @@ class SecretFinder:
         headers = {
             "User-Agent": "OmniScan-AI/1.0 (security research)",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            **self._extra_headers,
         }
 
         def _advance() -> None:

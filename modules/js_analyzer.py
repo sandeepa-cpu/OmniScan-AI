@@ -83,11 +83,16 @@ class JSAnalyzer:
         timeout: aiohttp.ClientTimeout | None = None,
         concurrency: int = 12,
         max_scripts: int = 60,
+        extra_headers: dict[str, str] | None = None,
     ) -> None:
         self._timeout = timeout or aiohttp.ClientTimeout(total=25)
         self._concurrency = max(1, concurrency)
         self._max_scripts = max(1, max_scripts)
-        self._secret_finder = SecretFinder(timeout=self._timeout)
+        self._extra_headers: dict[str, str] = dict(extra_headers or {})
+        self._secret_finder = SecretFinder(
+            timeout=self._timeout,
+            extra_headers=self._extra_headers,
+        )
 
     @staticmethod
     def _looks_like_js(url: str, content_type: str) -> bool:
@@ -217,6 +222,7 @@ class JSAnalyzer:
         headers = {
             "User-Agent": "OmniScan-AI/1.0 (js-deep-analyzer)",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            **self._extra_headers,
         }
 
         def _advance() -> None:

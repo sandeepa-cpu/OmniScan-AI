@@ -75,9 +75,11 @@ class IDORScanner:
         self,
         timeout: aiohttp.ClientTimeout | None = None,
         concurrency: int = 8,
+        extra_headers: dict[str, str] | None = None,
     ) -> None:
         self._timeout = timeout or aiohttp.ClientTimeout(total=20)
         self._concurrency = max(1, concurrency)
+        self._extra_headers: dict[str, str] = dict(extra_headers or {})
 
     @classmethod
     def _extract_pii(cls, text: str | None) -> dict[str, set[str]]:
@@ -253,6 +255,7 @@ class IDORScanner:
         headers = {
             "User-Agent": "OmniScan-AI/2.0 (idor-probe)",
             "Accept": "*/*",
+            **self._extra_headers,
         }
 
         def _advance() -> None:
