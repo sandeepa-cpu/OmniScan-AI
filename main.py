@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -66,11 +67,15 @@ Examples:
   python main.py --url example.com --port
   python main.py --url example.com --js --xss --ai --idor --report --pdf
   python main.py --url example.com --subdomain --xss --cloud --brute --port --js --idor --ai --report --pdf
+  python main.py --url example.com --idor --js --xss \
+    --headers '{"Authorization": "Bearer eyJ...", "X-Api-Key": "abc"}'
 
 Notes:
   - `--url` accepts bare hostnames; `https://` is added automatically.
   - Combining `--ai` with `--xss` auto-generates WAF-bypass XSS payload mutations.
   - `--idor` needs a URL that exposes a numeric id (e.g. ?id=42 or /users/42).
+  - `--headers` takes a JSON object; headers flow into the XSS, IDOR, and JS
+    secret scanners (for authenticated endpoints). Invalid JSON exits with code 2.
   - `--pdf` requires `fpdf2` (see requirements.txt).
   - Use only on targets you are explicitly authorized to test.
 """
@@ -126,6 +131,58 @@ def _banner(console: Console) -> None:
             padding=(1, 2),
         )
     )
+
+
+def _parse_headers_arg(raw: str | None, console: Console) -> dict[str, str]:
+    """Parse the optional --headers JSON argument into a flat string->string dict.
+
+    Invalid JSON, non-object payloads, or non-string values are reported through
+    the Rich console and cause a clean exit (code 2 - argparse convention) so the
+    user can fix the value instead of silently running without auth headers.
+    An empty dict is returned when ``raw`` is None / empty / whitespace.
+    """
+    if raw is None or not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        console.print(
+            f"[red]Invalid --headers JSON:[/red] {escape(str(exc))}\n"
+            f"[dim]Example: --headers '{{\"Authorization\": \"Bearer eyJ...\", "
+            f"\"X-Api-Key\": \"abc\"}}'[/dim]"
+        )
+        raise SystemExit(2) from None
+
+    if not isinstance(parsed, dict):
+        console.print(
+            "[red]--headers must be a JSON object (dict), "
+            f"got {type(parsed).__name__}.[/red]\n"
+            "[dim]Example: --headers '{\"Authorization\": \"Bearer eyJ...\"}'[/dim]"
+        )
+        raise SystemExit(2)
+
+    headers: dict[str, str] = {}
+    bad: list[str] = []
+    for key, value in parsed.items():
+        if not isinstance(key, str) or not key.strip():
+            bad.append(repr(key))
+            continue
+        if value is None:
+            continue
+        if not isinstance(value, (str, int, float, bool)):
+            bad.append(f"{key}={type(value).__name__}")
+            continue
+        headers[key.strip()] = str(value)
+
+    if bad:
+        console.print(
+            "[red]--headers contains unsupported entries:[/red] "
+            f"{escape(', '.join(bad))}\n"
+            "[dim]Header keys must be non-empty strings; values must be scalar.[/dim]"
+        )
+        raise SystemExit(2)
+
+    return headers
 
 
 def _normalize_url(raw: str) -> str:
@@ -204,6 +261,17 @@ def _build_parser() -> argparse.ArgumentParser:
             "IDOR scanner - find numeric IDs in query params (id, user_id, order_id, ...) "
             "or path segments (/users/42), then probe neighbouring IDs and flag Critical "
             "when HTTP 200 returns different PII than the baseline."
+        ),
+    )
+    parser.add_argument(
+        "--headers",
+        metavar="JSON",
+        default=None,
+        help=(
+            "Optional JSON object of custom HTTP headers to attach to every request "
+            "made by the XSS, IDOR, and JS-secret scanners. Example: "
+            "--headers '{\"Authorization\": \"Bearer eyJ...\", \"Cookie\": \"session=abc\"}'. "
+            "If omitted, an empty header set is used."
         ),
     )
     parser.add_argument(
@@ -653,6 +721,7 @@ async def _run(
     idor: bool,
     save_report: bool,
     save_pdf: bool,
+    extra_headers: dict[str, str],
     console: Console,
 ) -> int:
     def _mode(flag: bool) -> str:
@@ -678,8 +747,15 @@ async def _run(
         f"idor={_mode(idor)}  "
         f"ai={_mode(show_ai)}  "
         f"report={_mode(save_report)}  "
-        f"pdf={_mode(save_pdf)}\n"
+        f"pdf={_mode(save_pdf)}  "
+        f"headers={_mode(bool(extra_headers))}\n"
     )
+    if extra_headers:
+        header_names = ", ".join(sorted(extra_headers.keys()))
+        console.print(
+            f"[dim]Custom headers attached to XSS / IDOR / JS-secret scanners: "
+            f"{escape(header_names)}[/dim]\n"
+        )
     if xss_mutations:
         console.print(
             f"[bold magenta]AI Auditor:[/bold magenta] generated "
@@ -789,7 +865,9 @@ async def _run(
 
         async def do_secrets():
             return await _wrap(
-                SecretFinder().find(url, on_plan=secret_on_plan, on_advance=secret_on_advance),
+                SecretFinder(extra_headers=extra_headers).find(
+                    url, on_plan=secret_on_plan, on_advance=secret_on_advance
+                ),
                 secret_task,
                 "[magenta]Secret scan complete",
                 "[red]Secret scan failed",
@@ -804,7 +882,10 @@ async def _run(
             )
 
         async def do_xss():
-            scanner = XSSScanner(extra_payloads=extra_xss_payloads)
+            scanner = XSSScanner(
+                extra_payloads=extra_xss_payloads,
+                extra_headers=extra_headers,
+            )
             return await _wrap(
                 scanner.scan(url, on_plan=xss_on_plan, on_advance=xss_on_advance),
                 xss_task,
@@ -838,7 +919,9 @@ async def _run(
 
         async def do_js():
             return await _wrap(
-                JSAnalyzer().analyze(url, on_plan=js_on_plan, on_advance=js_on_advance),
+                JSAnalyzer(extra_headers=extra_headers).analyze(
+                    url, on_plan=js_on_plan, on_advance=js_on_advance
+                ),
                 js_task,
                 "[bright_cyan]JS deep analysis complete",
                 "[red]JS deep analysis failed",
@@ -846,7 +929,9 @@ async def _run(
 
         async def do_idor():
             return await _wrap(
-                IDORScanner().scan(url, on_plan=idor_on_plan, on_advance=idor_on_advance),
+                IDORScanner(extra_headers=extra_headers).scan(
+                    url, on_plan=idor_on_plan, on_advance=idor_on_advance
+                ),
                 idor_task,
                 "[bright_red]IDOR probe complete",
                 "[red]IDOR probe failed",
@@ -1096,6 +1181,8 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
+    extra_headers = _parse_headers_arg(args.headers, console)
+
     try:
         raise SystemExit(
             asyncio.run(
@@ -1111,6 +1198,7 @@ def main() -> None:
                     args.idor,
                     args.report or args.pdf,
                     args.pdf,
+                    extra_headers,
                     console,
                 )
             )
