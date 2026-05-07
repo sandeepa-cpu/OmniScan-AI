@@ -4,6 +4,8 @@
 
 ### The Ultimate Bug Hunter's Suite
 
+#### Aggressive Infiltration Edition &nbsp;·&nbsp; v2.5
+
 *An async, AI-augmented reconnaissance framework for the modern web-security era.*
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
@@ -11,15 +13,15 @@
 [![aiohttp](https://img.shields.io/badge/aiohttp-3.9%2B-2C5BB4)](https://docs.aiohttp.org/)
 [![Rich UI](https://img.shields.io/badge/UI-Rich-FF4081)](https://rich.readthedocs.io/)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0-success.svg)](#)
+[![Version](https://img.shields.io/badge/version-2.5-success.svg)](#)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](#)
 [![Status](https://img.shields.io/badge/status-active-brightgreen.svg)](#)
 
-<sub><strong>Secrets</strong> &bull; <strong>Subdomains</strong> &bull; <strong>AI-guided XSS</strong> &bull; <strong>IDOR</strong> &bull; <strong>Deep JS analysis</strong> &bull; <strong>Cloud / Paths / Ports</strong> &bull; <strong>PDF reports</strong></sub>
+<sub><strong>Secrets</strong> &bull; <strong>Nuclei</strong> &bull; <strong>Subdomains</strong> &bull; <strong>AI-guided XSS</strong> &bull; <strong>AI-Mutator</strong> &bull; <strong>Zero-Day Hunter</strong> &bull; <strong>IDOR</strong> &bull; <strong>Deep JS</strong> &bull; <strong>Cloud / Paths / Ports</strong> &bull; <strong>Dashboard</strong> &bull; <strong>PDF / JSON</strong></sub>
 
 <br/>
 
-<em>Developed by <strong>Channa Sandeepa</strong> &bull; OmniScan-AI v2.0 &bull; &copy; 2026</em>
+<em>Developed by <strong>Channa Sandeepa</strong> &bull; OmniScan-AI v2.5 (Aggressive Infiltration Edition) &bull; &copy; 2026</em>
 
 </div>
 
@@ -40,6 +42,7 @@
 ## Table of contents
 
 - [Why OmniScan-AI](#why-omniscan-ai)
+- [New in v2.5](#new-in-v25)
 - [Feature matrix](#feature-matrix)
 - [Installation](#installation)
 - [Quick start](#quick-start)
@@ -56,9 +59,23 @@
 
 Traditional recon tools are fast but dumb, or smart but painful to read. **OmniScan-AI** glues them together with three ideas that matter in 2026:
 
-1. **One command, seven scanners.** Secrets, deep JS analysis, subdomain recon, reflected XSS, IDOR, cloud exposure, path brute, and TCP port scanning all run concurrently in a single async pipeline.
-2. **AI-guided offense.** The built-in `AIAuditor` ships WAF-bypass mutation logic that rewrites XSS payloads (case mixing, HTML/URL entities, tag splitting, null bytes, SVG/event-handler tricks) before they hit the target — *no external LLM required*.
-3. **Professional output.** Every scan produces branded `.txt`, `.json`, and `.pdf` reports in `reports/<target>/`. Your signature is on every page.
+1. **One command, many scanners.** Secrets, deep JS analysis, subdomain recon, reflected XSS, IDOR, cloud exposure, path brute, TCP ports, optional **Nuclei** templates, **Zero-Day Hunter** heuristics, and more run concurrently in a single async pipeline.
+2. **AI-guided offense.** The built-in `AIAuditor` ships WAF-bypass mutation logic that rewrites XSS payloads (case mixing, HTML/URL entities, tag splitting, null bytes, SVG/event-handler tricks) before they hit the target — *no external LLM required*. **AI-Mutator** extends this with per-parameter variant rows when slots are discovered.
+3. **Professional output.** Every scan can produce branded `.txt`, `.json`, and `.pdf` reports in `reports/<target>/`, with structured sections (including Nuclei) for automation. Your signature is on every page.
+
+---
+
+## New in v2.5
+
+**OmniScan-AI v2.5 — Aggressive Infiltration Edition** adds depth across scanning, mutation, and operations:
+
+| Highlight | What you get |
+|-----------|----------------|
+| **Nuclei integration** | Advanced vulnerability scanning powered by **[ProjectDiscovery Nuclei](https://github.com/projectdiscovery/nuclei)** and **9,000+** community templates — enable with `--nuclei` (requires the `nuclei` binary on your `PATH`). Results appear in the Rich console, **JSON** (`nuclei_results`), **PDF**, and the live dashboard loot stream. |
+| **Zero-Day Hunter** | Heuristic **logic-flaw** and fuzz-style signals via `--zero-day` (authorized targets only; see `--help` and module notes for scope / HWID where applicable). |
+| **AI-Mutator** | **`--ai-mutate`** generates smart **WAF-bypass payload variants** from discovered parameter slots (combine with `--params` and/or `--xss`). |
+| **Real-time dashboard** | Web-based monitoring with **Flask** and **Socket.IO**: run `python dashboard.py` and open the UI; scan subprocesses use `OMNISCAN_DASHBOARD=1` for structured events, logs, and loot. |
+| **Professional reporting** | **Enhanced PDF and JSON** exports — executive summary lines for Nuclei, dedicated PDF section *“Nuclei Vulnerability Scan”*, and richer machine-readable fields for downstream tooling. |
 
 ---
 
@@ -75,7 +92,11 @@ Traditional recon tools are fast but dumb, or smart but painful to read. **OmniS
 | 7 | **Path Bruter** | `--brute` | Tries sensitive paths (`.git/`, `.env`, `/admin`, backups, CI/CD, debug endpoints). | High / Medium / Low |
 | 8 | **Port Scanner** | `--port` | Fast async TCP-connect sweep of a curated common-service port list. | Medium |
 | 9 | **AI Auditor** | `--ai` | Renders the prompt-injection playbook for testing AI chat interfaces; also drives the XSS mutation engine. | - |
-| 10 | **PDF Reporter** | `--pdf` | Branded multi-page PDF with your signature in every page header **and** footer. Implicitly enables `--report`. | - |
+| 10 | **Nuclei Engine** | `--nuclei` | Invokes the external `nuclei` CLI (JSONL), template-driven findings merged into reports and dashboard loot. | info → critical |
+| 11 | **Zero-Day Hunter** | `--zero-day` | Heuristic logic-flaw / fuzz pass (authorized use). | Varies |
+| 12 | **AI-Mutator** | `--ai-mutate` | Variant payloads from discovered slots (`--params` / `--xss` workflows). | Varies |
+| 13 | **Logic scan** | `--logic-scan` | Lightweight post-pass triage (e.g. IDOR / price-style heuristics from other modules’ signals). | Varies |
+| 14 | **PDF Reporter** | `--pdf` | Branded multi-page PDF with your signature in every page header **and** footer. Implicitly enables `--report`. | - |
 
 ---
 
@@ -110,6 +131,7 @@ Dependencies (from `requirements.txt`):
 | `requests` | Legacy sync fallback |
 | `rich` | Banner, progress bars, tables, panels |
 | `fpdf2` | Branded PDF report generation |
+| `flask`, `flask-socketio` | Real-time web dashboard (`dashboard.py`) |
 
 ---
 
@@ -119,8 +141,8 @@ Dependencies (from `requirements.txt`):
 # Minimal: run the secret scanner against one target
 python main.py --url example.com
 
-# The "full portfolio" scan everyone will remember you by
-python main.py --url example.com --xss --idor --js --report --pdf
+# Strong recon + Nuclei templates + branded exports (Nuclei must be on PATH)
+python main.py --url example.com --xss --idor --js --nuclei --report --pdf
 ```
 
 > `--url` accepts bare hostnames; `https://` is prepended automatically.
@@ -132,7 +154,7 @@ python main.py --url example.com --xss --idor --js --report --pdf
 ### Full scan (recommended for bug-bounty recon)
 
 ```bash
-python main.py --url example.com --xss --idor --js --report --pdf
+python main.py --url example.com --xss --idor --js --nuclei --report --pdf
 ```
 
 This single command will:
@@ -140,15 +162,16 @@ This single command will:
 - Scrape `<script>` tags + run **Deep JS Analysis** on every linked `.js` asset (`--js`).
 - Probe GET parameters and forms for **reflected XSS** (`--xss`).
 - Hunt for **IDOR** on every numeric id in the URL (`--idor`).
+- Run **Nuclei** against the target (`--nuclei`; install [nuclei](https://github.com/projectdiscovery/nuclei/releases) and ensure it is on `PATH`).
 - Save branded `.txt`, `.json`, and `.pdf` reports into `reports/<target>/` (`--report --pdf`).
 
 ### Maximum coverage
 
 ```bash
-python main.py --url example.com --subdomain --xss --ai --idor --cloud --brute --port --js --report --pdf
+python main.py --url example.com --subdomain --xss --ai --idor --cloud --brute --port --js --nuclei --zero-day --ai-mutate --report --pdf
 ```
 
-Adds subdomain discovery, AI-guided WAF-bypass XSS mutations, cloud bucket enumeration, sensitive-path brute, and TCP port scanning.
+Adds subdomain discovery, AI-guided WAF-bypass XSS mutations, **Nuclei** templates, **Zero-Day Hunter** heuristics, **AI-Mutator** variants (with discovered slots), cloud bucket enumeration, sensitive-path brute, and TCP port scanning.
 
 ### Other common recipes
 
@@ -156,11 +179,17 @@ Adds subdomain discovery, AI-guided WAF-bypass XSS mutations, cloud bucket enume
 # Just the AI prompt-injection playbook (for AI-chat interfaces)
 python main.py --url chat.example.com --ai
 
+# Nuclei-only pass + machine-readable JSON (binary must be on PATH)
+python main.py --url https://example.com --nuclei --report
+
+# Zero-Day Hunter + deep JS + parameter discovery (authorized scope only)
+python main.py --url example.com --zero-day --js --params --report
+
 # IDOR-only against a deep link that exposes a numeric ID
 python main.py --url "https://api.example.com/users/42" --idor --report
 
 # Full-spectrum recon + branded PDF only (no text report)
-python main.py --url example.com --subdomain --xss --ai --cloud --brute --port --js --idor --pdf
+python main.py --url example.com --subdomain --xss --ai --cloud --brute --port --js --idor --nuclei --pdf
 ```
 
 ---
@@ -177,11 +206,18 @@ python main.py --url example.com --subdomain --xss --ai --cloud --brute --port -
 | `--js` | Deep JS analyzer - concurrently crawl every linked script for endpoints and secrets. |
 | `--cloud` | Enumerate candidate public cloud buckets (S3 / Azure / GCP / DO). |
 | `--brute` | Brute common sensitive paths (`.git`, `.env`, `/admin`, CI/CD, backups, debug). |
+| `--params` | **Hidden parameter probe** (GET / POST / JSON) — feeds Zero-Day Hunter, AI-Mutator slots, and logic scan. |
 | `--port` | TCP-connect scan over a curated list of common service ports. |
+| `--nuclei` | Run **ProjectDiscovery Nuclei** against `--url` (subprocess); JSONL findings in console, reports, and dashboard loot. |
+| `--zero-day` | Enable **Zero-Day Hunter** heuristic / fuzz pass (authorized testing only). |
+| `--ai-mutate` | **AI-Mutator**: generate payload variants from discovered parameter slots. |
+| `--logic-scan` | Run logic-style triage over signals from other modules. |
 | `--report` | Save results as `.txt` *and* `.json` under `reports/<target>/`. |
 | `--pdf` | Also render a branded `.pdf`. Auto-enables `--report`. Requires `fpdf2`. |
 | `--version` | Print version and exit. |
 | `-h`, `--help` | Show the help screen and exit. |
+
+> **Dashboard:** run `python dashboard.py` for the Flask + Socket.IO UI. Scans started from the dashboard set `OMNISCAN_DASHBOARD=1` on the child process so logs and loot stream to the browser.
 
 ---
 
@@ -199,7 +235,7 @@ reports/
 
 Every report is **signed**:
 
-> *Developed by Channa Sandeepa &bull; OmniScan-AI v2.0 &bull; &copy; 2026*
+> *Developed by Channa Sandeepa &bull; OmniScan-AI v2.5 (Aggressive Infiltration Edition) &bull; &copy; 2026*
 
 In the PDF, this signature is rendered in the header **and** footer of every page (hardcoded in `modules/report_generator.py`).
 
@@ -210,17 +246,23 @@ In the PDF, this signature is rendered in the header **and** footer of every pag
 ```
 OmniScan-AI/
 ├── main.py                       # CLI entrypoint + orchestrator
+├── dashboard.py                  # Flask + Socket.IO: live logs, loot, scan control
+├── templates/
+│   └── index.html                # Dashboard SPA shell
 ├── modules/
 │   ├── __init__.py
 │   ├── ai_auditor.py             # Prompt-injection payloads + XSS WAF-bypass mutator
+│   ├── ai_mutator.py             # AI-Mutator: slot-driven payload variants
 │   ├── cloud_scanner.py          # S3 / Azure / GCP / DO bucket enumeration
 │   ├── idor_scanner.py           # Numeric-ID discovery + Critical-on-PII-drift logic
 │   ├── js_analyzer.py            # Deep JS endpoint + secret crawler
+│   ├── nuclei_engine.py          # Subprocess wrapper for ProjectDiscovery Nuclei (-jsonl)
 │   ├── path_bruter.py            # Sensitive-path brute forcer
 │   ├── port_scanner.py           # Async TCP port sweep
 │   ├── report_generator.py       # .txt / .json / branded .pdf reporting
 │   ├── secret_finder.py          # Regex-based secret scanner (core)
 │   ├── subdomain_scanner.py      # Subdomain discovery
+│   ├── zero_day_hunter.py        # Zero-Day Hunter heuristics
 │   └── xss_scanner.py            # Reflected-XSS prober
 ├── reports/                      # Generated scan outputs (git-ignored)
 ├── requirements.txt
@@ -238,6 +280,8 @@ OmniScan-AI/
 - **`rich`** - ANSI banner, colour-coded tables, live progress bars, clickable links.
 - **`beautifulsoup4`** - HTML parsing, script/form discovery.
 - **`fpdf2`** - custom `FPDF` subclass with a branded running header + footer.
+- **Flask + Flask-SocketIO** - optional real-time dashboard (`dashboard.py`).
+- **Nuclei (external)** - template scanner invoked via subprocess when using `--nuclei`; install separately and keep templates updated.
 - **Regex-first design** - every signature is auditable; no opaque ML weights.
 
 ---
@@ -273,7 +317,7 @@ See the full text in [`LICENSE`](LICENSE).
 
 <div align="center">
 
-<sub><strong>OmniScan-AI v2.0</strong> &bull; Developed by <strong>Channa Sandeepa</strong> &bull; &copy; 2026 &bull; Licensed under <strong>GPL-3.0</strong></sub>
+<sub><strong>OmniScan-AI v2.5</strong> (Aggressive Infiltration Edition) &bull; Developed by <strong>Channa Sandeepa</strong> &bull; &copy; 2026 &bull; Licensed under <strong>GPL-3.0</strong></sub>
 
 <br/>
 
