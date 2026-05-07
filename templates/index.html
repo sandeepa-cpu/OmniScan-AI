@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OmniScan-AI | Command Dashboard</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Orbitron:wght@500;700&display=swap" rel="stylesheet" />
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" crossorigin="anonymous"></script>
+  <style>
+    :root {
+      --neo: #00ff9d;
+      --neo-dim: #00c77a;
+      --bg0: #05080a;
+      --bg1: #0a1014;
+      --bg2: #0f181e;
+      --border: #1a2f24;
+      --text-dim: #6b8f7e;
+      --alert: #ff3366;
+    }
+    html, body { margin: 0; }
+    body {
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      background: radial-gradient(ellipse 120% 80% at 50% -20%, #0d1a14 0%, var(--bg0) 45%);
+      color: #d8e8df;
+      min-height: 100vh;
+    }
+    #main-dashboard {
+      display: block !important;
+      visibility: visible !important;
+      opacity: 1 !important;
+      position: relative !important;
+      z-index: 10 !important;
+    }
+    #login-screen, #login-modal, [id="login-modal"], .login-modal, .login-overlay, .login-gate, #login-gate {
+      display: none !important;
+      visibility: hidden !important;
+      pointer-events: none !important;
+      height: 0 !important;
+      width: 0 !important;
+      overflow: hidden !important;
+      opacity: 0 !important;
+    }
+    h1, .orbitron { font-family: "Orbitron", sans-serif; letter-spacing: 0.08em; }
+    .neo-glow { text-shadow: 0 0 12px rgba(0, 255, 157, 0.45); }
+    .panel {
+      background: linear-gradient(145deg, var(--bg2), var(--bg1));
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      box-shadow: 0 0 0 1px rgba(0, 255, 157, 0.06), inset 0 1px 0 rgba(255,255,255,0.03);
+    }
+    .panel-header {
+      border-bottom: 1px solid var(--border);
+      padding: 0.65rem 1rem;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      color: var(--neo);
+    }
+    .stat-card {
+      border-left: 3px solid var(--neo);
+      padding: 1rem 1.1rem;
+    }
+    .stat-value {
+      font-size: 2rem;
+      font-weight: 700;
+      color: var(--neo);
+      line-height: 1.1;
+    }
+    .stat-label { color: var(--text-dim); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.12em; }
+    .form-control, .form-check-input {
+      background-color: var(--bg0) !important;
+      border-color: var(--border) !important;
+      color: #e0f0e8 !important;
+    }
+    .form-control:focus {
+      border-color: var(--neo-dim) !important;
+      box-shadow: 0 0 0 0.2rem rgba(0, 255, 157, 0.15) !important;
+    }
+    textarea.form-control { font-size: 0.8rem; min-height: 4.5rem; }
+    .btn-neo {
+      background: linear-gradient(180deg, #00ff9d 0%, #00c77a 100%);
+      color: #03110a !important;
+      font-weight: 700;
+      border: none;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      font-size: 0.75rem;
+    }
+    .btn-neo:hover { filter: brightness(1.08); color: #021008 !important; }
+    .btn-outline-neo {
+      border: 1px solid var(--neo);
+      color: var(--neo) !important;
+      background: transparent;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .btn-outline-neo:hover { background: rgba(0, 255, 157, 0.12); }
+    .terminal-wrap {
+      position: relative;
+    }
+    .terminal {
+      background: #020403;
+      border: 1px solid var(--border);
+      font-size: 0.78rem;
+      line-height: 1.45;
+      max-height: min(42vh, 520px);
+      min-height: 280px;
+      height: 38vh;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 0.75rem 1rem;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: #9dffb8;
+    }
+    .terminal .ts { color: var(--text-dim); margin-right: 0.5rem; }
+    .loot-table { font-size: 0.78rem; }
+    .loot-table th { color: var(--neo); border-color: var(--border) !important; }
+    .loot-table td { border-color: var(--border) !important; vertical-align: middle; }
+    .badge-sev-crit { background: #ff3366; color: #fff; }
+    .badge-sev-high { background: #ff6644; color: #fff; }
+    .badge-sev-med { background: #cc9900; color: #111; }
+    .badge-sev-low { background: #226644; color: #bfffd9; }
+    .grid-hud::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background-image: linear-gradient(rgba(0,255,157,0.03) 1px, transparent 1px);
+      background-size: 100% 4px;
+      pointer-events: none;
+      z-index: 0;
+    }
+    .content-z { position: relative; z-index: 1; }
+    .form-switch .form-check-input:checked {
+      background-color: var(--neo-dim);
+      border-color: var(--neo);
+    }
+    .progress {
+      background-color: var(--bg0);
+      border: 1px solid var(--border);
+    }
+    .progress-bar.bg-cpu { background: linear-gradient(90deg, #00c77a, #00ff9d) !important; color: #03110a; font-weight: 700; font-size: 0.7rem; }
+    .progress-bar.bg-ram { background: linear-gradient(90deg, #0088cc, #00ccff) !important; color: #03110a; font-weight: 700; font-size: 0.7rem; }
+    a.btn-download-pdf.disabled { pointer-events: none; opacity: 0.45; }
+  </style>
+</head>
+<body>
+  <div id="main-dashboard" class="content-z container-fluid py-3 px-3 px-lg-4" style="display: block !important; visibility: visible !important;">
+    <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">
+      <div>
+        <h1 class="h4 mb-0 orbitron neo-glow">OMNISCAN<span class="text-white">-AI</span></h1>
+        <div class="small text-muted">Tactical reconnaissance suite · Live log stream</div>
+        <div class="small mt-1" style="color: var(--text-dim);">Local control panel. Hard-refresh (Ctrl+F5) if the page looks out of date.</div>
+      </div>
+      <div class="d-flex flex-wrap gap-2 align-items-center">
+        <a id="btnDownloadPdf" class="btn btn-outline-neo btn-sm disabled btn-download-pdf" href="/reports/download/latest" target="_blank" rel="noopener">Download PDF</a>
+        <span id="connBadge" class="badge rounded-pill bg-secondary">SOCKET …</span>
+        <span id="scanBadge" class="badge rounded-pill bg-dark border border-secondary">IDLE</span>
+      </div>
+    </div>
+
+    <!-- System monitor -->
+    <div class="panel mb-3">
+      <div class="panel-header orbitron">System monitor</div>
+      <div class="p-3">
+        <div class="small text-muted mb-1">CPU</div>
+        <div class="progress mb-3" style="height: 24px;">
+          <div id="cpuBar" class="progress-bar bg-cpu" role="progressbar" style="width: 0%;">—</div>
+        </div>
+        <div class="small text-muted mb-1">RAM</div>
+        <div class="progress" style="height: 24px;">
+          <div id="ramBar" class="progress-bar bg-ram" role="progressbar" style="width: 0%;">—</div>
+        </div>
+        <div id="sysMonNote" class="small text-muted mt-2 mb-0"></div>
+      </div>
+    </div>
+
+    <div class="row g-3 mb-3">
+      <div class="col-md-4">
+        <div class="panel stat-card h-100">
+          <div class="stat-label">Targets scanned</div>
+          <div class="stat-value" id="statTargets">0</div>
+          <div class="small text-muted mt-1" id="statTargetUrl">—</div>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="panel stat-card h-100">
+          <div class="stat-label">Vulnerability signals</div>
+          <div class="stat-value" id="statVulns">0</div>
+          <div class="small text-muted mt-1">Critical / High weighted findings</div>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="panel stat-card h-100">
+          <div class="stat-label">WAF / bypass signals</div>
+          <div class="stat-value" id="statWaf">0</div>
+          <div class="small text-muted mt-1" id="statWafName">No WAF fingerprint</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row g-3 mb-3">
+      <div class="col-lg-5">
+        <div class="panel mb-3">
+          <div class="panel-header orbitron">Control panel</div>
+          <div class="p-3">
+            <label class="form-label small text-uppercase text-muted">Target URL</label>
+            <input type="text" id="targetUrl" class="form-control mb-3" placeholder="https://scope.example.com" />
+            <label class="form-label small text-uppercase text-muted">Custom headers (JSON)</label>
+            <textarea id="customHeadersJson" class="form-control mb-3 font-monospace" spellcheck="false" placeholder='{"X-Custom": "value"}'>{"X-Bug-Bounty": "True"}</textarea>
+            <div class="form-check form-switch mb-2">
+              <input class="form-check-input" type="checkbox" id="swAi" />
+              <label class="form-check-label" for="swAi">AI auditor &amp; WAF-bypass XSS mutations</label>
+            </div>
+            <div class="form-check form-switch mb-2">
+              <input class="form-check-input" type="checkbox" id="swZero" />
+              <label class="form-check-label" for="swZero">Zero-Day Hunter (.env HWID; dev can set OMINSCAN_ZERODAY_SKIP_HWID=1)</label>
+            </div>
+            <div class="form-check form-switch mb-2">
+              <input class="form-check-input" type="checkbox" id="swPlaytika" checked />
+              <label class="form-check-label" for="swPlaytika">Playtika bounty — OAuth/OIDC/social probes + <code>X-Bug-Bounty: True</code> + stronger pacing</label>
+            </div>
+            <div class="form-check form-switch mb-3">
+              <input class="form-check-input" type="checkbox" id="swInfil" />
+              <label class="form-check-label" for="swInfil">Autonomous infiltration follow-up</label>
+            </div>
+            <div class="d-flex flex-wrap gap-2">
+              <button type="button" id="btnStart" class="btn btn-neo px-4">Deploy scan</button>
+              <button type="button" id="btnStop" class="btn btn-outline-danger btn-sm text-uppercase">Abort</button>
+              <button type="button" id="btnClear" class="btn btn-outline-neo btn-sm">Clear terminal</button>
+            </div>
+            <p class="small text-muted mt-3 mb-0">
+              Dashboard runs a full module stack with <strong>--report --pdf</strong>. Custom headers are passed as <code>--headers</code> to <code>main.py</code>. Logs (including WAF / exploit-gen output on stdout) stream below via Socket.IO.
+            </p>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header orbitron">Loot</div>
+          <div class="p-0 table-responsive" style="max-height: 280px; overflow-y: auto;">
+            <table class="table table-dark table-striped loot-table mb-0">
+              <thead class="sticky-top" style="background: var(--bg2);">
+                <tr>
+                  <th>Category</th>
+                  <th>Severity</th>
+                  <th>Detail</th>
+                </tr>
+              </thead>
+              <tbody id="lootBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="col-lg-7 d-none d-lg-block">
+        <div class="panel h-100 p-4 text-muted small" style="min-height: 200px;">
+          <p class="mb-2"><strong class="text-secondary">Live terminal</strong> is pinned at the bottom — full width, scrollable.</p>
+          <p class="mb-0">Socket events: <code>log_update</code>, <code>terminal_line</code>, <code>system_stats</code>. Scanner subprocess stdout/stderr is merged and streamed line-by-line.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Scrollable live terminal (bottom) -->
+    <div class="panel terminal-wrap mb-2">
+      <div class="panel-header d-flex justify-content-between align-items-center orbitron">
+        <span>Live terminal</span>
+        <span class="small text-muted" style="letter-spacing:0.1em;">SCANNER STDOUT / STDERR · AUTO-SCROLL</span>
+      </div>
+      <div id="terminal" class="terminal"></div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    const terminal = document.getElementById("terminal");
+    const lootBody = document.getElementById("lootBody");
+    const statTargets = document.getElementById("statTargets");
+    const statVulns = document.getElementById("statVulns");
+    const statWaf = document.getElementById("statWaf");
+    const statWafName = document.getElementById("statWafName");
+    const statTargetUrl = document.getElementById("statTargetUrl");
+    const connBadge = document.getElementById("connBadge");
+    const scanBadge = document.getElementById("scanBadge");
+    const cpuBar = document.getElementById("cpuBar");
+    const ramBar = document.getElementById("ramBar");
+    const sysMonNote = document.getElementById("sysMonNote");
+    const btnDownloadPdf = document.getElementById("btnDownloadPdf");
+
+    function ts() {
+      const d = new Date();
+      return d.toISOString().split("T")[1].slice(0, 8);
+    }
+
+    function appendLine(text) {
+      const row = document.createElement("div");
+      row.innerHTML = '<span class="ts">[' + ts() + "]</span>" + escapeHtml(text);
+      terminal.appendChild(row);
+      requestAnimationFrame(() => {
+        terminal.scrollTop = terminal.scrollHeight;
+      });
+    }
+
+    function escapeHtml(s) {
+      return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    function sevClass(s) {
+      if (!s) return "bg-secondary";
+      const u = String(s).toLowerCase();
+      if (u === "critical") return "badge-sev-crit";
+      if (u === "high") return "badge-sev-high";
+      if (u === "medium") return "badge-sev-med";
+      return "badge-sev-low";
+    }
+
+    function normalizeLootItem(item) {
+      const category = item.category != null ? item.category : (item.kind || "");
+      const detail =
+        item.detail != null ? item.detail : (item.match != null ? item.match : "");
+      return {
+        category: String(category),
+        severity: String(item.severity || ""),
+        detail: String(detail),
+        source: String(item.source != null ? item.source : (item.source_url || "")),
+      };
+    }
+
+    function addLootRow(item) {
+      const L = normalizeLootItem(item);
+      const tr = document.createElement("tr");
+      const detailCell = L.detail.slice(0, 160);
+      const title = L.detail + (L.source ? "\n\nSource: " + L.source : "");
+      tr.innerHTML =
+        "<td>" + escapeHtml(L.category) + "</td>" +
+        "<td><span class=\"badge " + sevClass(L.severity) + "\">" +
+        escapeHtml(L.severity) + "</span></td>" +
+        "<td><div class=\"text-truncate\" style=\"max-width:360px\" title=\"" +
+        escapeHtml(title) + "\">" +
+        escapeHtml(detailCell) + "</div></td>";
+      lootBody.appendChild(tr);
+    }
+
+    async function refreshPdfButton() {
+      try {
+        const r = await fetch("/api/reports/latest-pdf");
+        if (!r.ok) {
+          btnDownloadPdf.classList.add("disabled");
+          return;
+        }
+        const j = await r.json();
+        if (!j.ok) {
+          btnDownloadPdf.classList.add("disabled");
+          return;
+        }
+        btnDownloadPdf.classList.remove("disabled");
+        btnDownloadPdf.href = j.download_url || "/reports/download/latest";
+        btnDownloadPdf.title = "Latest: " + (j.filename || "report.pdf");
+      } catch (e) {
+        btnDownloadPdf.classList.add("disabled");
+      }
+    }
+
+    let cumulativeTargets = 0;
+    const socketOrigin =
+      typeof location !== "undefined" && location.origin && location.origin !== "null"
+        ? location.origin
+        : "http://127.0.0.1:8080";
+    const socket = io(socketOrigin, {
+      path: "/socket.io/",
+      transports: ["websocket", "polling"],
+      reconnection: true,
+      reconnectionAttempts: 25,
+      reconnectionDelay: 400,
+      timeout: 20000,
+    });
+
+    socket.on("connect", () => {
+      connBadge.textContent = "SOCKET LIVE";
+      connBadge.classList.remove("bg-secondary");
+      connBadge.classList.add("bg-success");
+    });
+
+    if (socket.io && typeof socket.io.on === "function") {
+      socket.io.on("reconnect_attempt", () => {
+        connBadge.textContent = "SOCKET …";
+        connBadge.classList.remove("bg-success");
+        connBadge.classList.add("bg-secondary");
+      });
+    }
+
+    socket.on("system_stats", (d) => {
+      if (!d) return;
+      if (d.error && d.cpu == null) {
+        sysMonNote.textContent = d.error === "install psutil" ? "Install psutil for live CPU/RAM (pip install psutil)." : String(d.error);
+        cpuBar.style.width = "0%";
+        cpuBar.textContent = "—";
+        ramBar.style.width = "0%";
+        ramBar.textContent = "—";
+        return;
+      }
+      sysMonNote.textContent = "";
+      const c = Math.min(100, Math.max(0, Number(d.cpu)));
+      const m = Math.min(100, Math.max(0, Number(d.memory)));
+      cpuBar.style.width = c + "%";
+      cpuBar.textContent = "CPU " + c + "%";
+      ramBar.style.width = m + "%";
+      ramBar.textContent = "RAM " + m + "%";
+    });
+
+    (async function envHandshake() {
+      try {
+        const r = await fetch("/api/env/status");
+        const j = await r.json();
+        if (!j.ok) return;
+        if (j.dotenv_file_exists) {
+          appendLine("[ ENV ] Optional .env file: present.");
+        } else {
+          appendLine("[ ENV ] Optional .env file: not found (see .env.example).");
+        }
+        const k = j.keys_present || {};
+        const bits = [];
+        if (k.OMNISCAN_DASHBOARD_SECRET) bits.push("dashboard secret");
+        if (k.OMINSCAN_ZERODAY_HWID) bits.push("zeroday HWID");
+        if (k.OMINSCAN_ZERODAY_SKIP_HWID) bits.push("zeroday HWID skip (dev)");
+        appendLine("[ ENV ] Variables detected: " + (bits.length ? bits.join(", ") : "none of the listed keys"));
+      } catch (e) {
+        appendLine("[ ENV ] Could not read env status: " + e);
+      }
+    })();
+
+    refreshPdfButton();
+
+    socket.on("disconnect", () => {
+      connBadge.textContent = "SOCKET DOWN";
+      connBadge.classList.remove("bg-success");
+      connBadge.classList.add("bg-secondary");
+    });
+
+    function handleLogUpdate(data) {
+      if (!data) return;
+      const t = data.text != null ? data.text : data.line;
+      if (t != null && String(t).length) appendLine(String(t));
+    }
+
+    socket.on("log_update", handleLogUpdate);
+    socket.on("terminal_line", handleLogUpdate);
+
+    socket.on("dashboard_event", (p) => {
+      if (p.event === "scan_start") {
+        lootBody.innerHTML = "";
+        appendLine("[[ DASH ]] scan_start → " + (p.target_url || ""));
+        statTargetUrl.textContent = p.target_url || "—";
+      }
+      if (p.event === "scan_stage") {
+        appendLine("[[ DASH ]] stage → " + (p.stage || ""));
+      }
+    });
+
+    socket.on("stats_update", (s) => {
+      if (!s) return;
+      if (s.targets != null) {
+        cumulativeTargets += Number(s.targets);
+        statTargets.textContent = String(cumulativeTargets);
+      }
+      if (s.vulnerabilities != null) statVulns.textContent = String(s.vulnerabilities);
+      if (s.waf_bypass_signals != null) statWaf.textContent = String(s.waf_bypass_signals);
+      if (s.detected_waf && s.detected_waf !== "none") {
+        statWafName.textContent = "WAF: " + s.detected_waf + " (×" + (s.waf_pacing_multiplier || 1) + ")";
+      } else {
+        statWafName.textContent = "WAF fingerprint: none / generic";
+      }
+    });
+
+    socket.on("new_loot", (row) => {
+      if (!row) return;
+      addLootRow(row);
+      const wrap = lootBody.parentElement;
+      if (wrap) wrap.scrollTop = wrap.scrollHeight;
+    });
+
+    socket.on("loot_update", (rows) => {
+      lootBody.innerHTML = "";
+      if (!rows || !rows.length) return;
+      rows.slice(0, 200).forEach(addLootRow);
+    });
+
+    socket.on("scan_finished", (d) => {
+      scanBadge.textContent = "EXIT " + (d && d.exit_code != null ? d.exit_code : "?");
+      scanBadge.classList.remove("bg-warning");
+      scanBadge.classList.add("bg-dark");
+      appendLine("[[ DASH ]] scan_finished exit_code=" + (d && d.exit_code));
+      refreshPdfButton();
+    });
+
+    document.getElementById("btnClear").onclick = () => { terminal.innerHTML = ""; };
+
+    document.getElementById("btnStart").onclick = async () => {
+      const url = document.getElementById("targetUrl").value.trim();
+      if (!url) { alert("Enter target URL"); return; }
+      let customHeaders = null;
+      const rawH = document.getElementById("customHeadersJson").value.trim();
+      if (rawH) {
+        try {
+          customHeaders = JSON.parse(rawH);
+          if (customHeaders === null || typeof customHeaders !== "object" || Array.isArray(customHeaders)) {
+            alert("Custom headers must be a JSON object, e.g. {\"X-Bug-Bounty\": \"True\"}");
+            return;
+          }
+        } catch (e) {
+          alert("Invalid JSON in Custom headers: " + e);
+          return;
+        }
+      }
+      scanBadge.textContent = "RUNNING";
+      scanBadge.classList.add("bg-warning");
+      scanBadge.classList.remove("bg-dark");
+      appendLine("[[ OP ]] Starting deployment…");
+      const body = {
+        url,
+        ai: document.getElementById("swAi").checked,
+        zero_day: document.getElementById("swZero").checked,
+        playtika_bounty: document.getElementById("swPlaytika").checked,
+        infiltrate: document.getElementById("swInfil").checked,
+      };
+      if (customHeaders && Object.keys(customHeaders).length) body.custom_headers = customHeaders;
+      const r = await fetch("/api/scan/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const j = await r.json();
+      if (!j.ok) {
+        appendLine("[[ ERR ]] " + (j.error || r.status));
+        scanBadge.textContent = "IDLE";
+        scanBadge.classList.remove("bg-warning");
+      }
+    };
+
+    document.getElementById("btnStop").onclick = async () => {
+      await fetch("/api/scan/stop", { method: "POST" });
+      appendLine("[[ OP ]] Abort requested.");
+    };
+  </script>
+</body>
+</html>

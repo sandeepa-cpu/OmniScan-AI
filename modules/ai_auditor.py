@@ -10,8 +10,10 @@ Authorized security testing only. ``AIAuditor`` exposes:
 
 from __future__ import annotations
 
+import random
 import re
 import urllib.parse
+from typing import Sequence
 
 
 class AIAuditor:
@@ -236,6 +238,70 @@ class AIAuditor:
             return None
 
     @classmethod
+    def infiltration_playbook(cls, snapshot: dict) -> list[dict]:
+        """Rule-based next-step recommendations from aggregated scan signals (no external LLM).
+
+        Each item: ``action``, ``priority``, ``rationale``, ``execute_hint``.
+        """
+        recs: list[dict] = []
+        if snapshot.get("count_403"):
+            recs.append(
+                {
+                    "action": "forbidden_bypass",
+                    "priority": "high",
+                    "rationale": "403 responses often soften with trusted-client headers or path normalization.",
+                    "execute_hint": "Re-run with --infiltrate; engine tries X-Forwarded-For and /./ variants.",
+                }
+            )
+        if snapshot.get("chain_hits"):
+            recs.append(
+                {
+                    "action": "credential_triage",
+                    "priority": "critical",
+                    "rationale": "Sensitive path bodies matched credential-like patterns.",
+                    "execute_hint": "Rotate secrets, restrict file exposure, verify DB firewall rules.",
+                }
+            )
+        if snapshot.get("param_probes"):
+            recs.append(
+                {
+                    "action": "manual_param_verify",
+                    "priority": "high",
+                    "rationale": "Active probes flagged time-delay, reflection, or file-read signals.",
+                    "execute_hint": "Confirm SQLi/XSS/LFI with in-scope manual testing or a dedicated DAST.",
+                }
+            )
+        ports = snapshot.get("open_ports") or []
+        if any(p in (8080, 8443, 8000, 8888, 9090, 5000) for p in ports):
+            recs.append(
+                {
+                    "action": "alternate_port_web",
+                    "priority": "medium",
+                    "rationale": "Common dev/admin ports responded; management UIs may be exposed.",
+                    "execute_hint": "Review Jenkins/Tomcat/Spring actuator paths on alternate ports.",
+                }
+            )
+        if snapshot.get("cookie_issues"):
+            recs.append(
+                {
+                    "action": "cookie_hardening",
+                    "priority": "medium",
+                    "rationale": "Session cookies missing HttpOnly or Secure increase session theft risk.",
+                    "execute_hint": "Enable HttpOnly + Secure; review SameSite policy.",
+                }
+            )
+        if not recs:
+            recs.append(
+                {
+                    "action": "baseline_complete",
+                    "priority": "low",
+                    "rationale": "No strong autonomous signals in this pass.",
+                    "execute_hint": "Broaden --brute wordlist or add authenticated --headers for deeper coverage.",
+                }
+            )
+        return recs
+
+    @classmethod
     def mutate_xss_payload(cls, payload: str) -> list[dict]:
         """
         Apply every WAF-bypass technique to ``payload`` and return non-duplicate
@@ -272,4 +338,48 @@ class AIAuditor:
                 mut_copy = dict(mut)
                 mut_copy["base_payload"] = base
                 collected.append(mut_copy)
+        return collected
+
+    @classmethod
+    def chained_waf_mutations(
+        cls,
+        payloads: Sequence[str],
+        *,
+        max_chains_per_base: int = 4,
+        chain_depth: int = 2,
+        rng: random.Random | None = None,
+    ) -> list[dict]:
+        """Apply 2-step technique chains (e.g. case mix → double URL-encode).
+
+        Rule-based planner only (no external LLM). For authorized testing.
+        """
+        r = rng or random.Random()
+        tech_ids = [t[0] for t in cls.WAF_BYPASS_TECHNIQUES]
+        depth = max(1, min(int(chain_depth), len(tech_ids)))
+        collected: list[dict] = []
+        seen: set[str] = set()
+        for base in payloads:
+            if not base:
+                continue
+            for _ in range(max(1, int(max_chains_per_base))):
+                cur = base
+                picked: list[str] = []
+                pool = list(tech_ids)
+                r.shuffle(pool)
+                for tid in pool[:depth]:
+                    nxt = cls._mutation_for(tid, cur)
+                    if not nxt or nxt == cur:
+                        continue
+                    picked.append(tid)
+                    cur = nxt
+                if cur != base and cur not in seen:
+                    seen.add(cur)
+                    collected.append(
+                        {
+                            "technique": "chain:" + "->".join(picked) if picked else "chain",
+                            "description": "Chained WAF-oriented transforms (heuristic planner).",
+                            "payload": cur,
+                            "base_payload": base,
+                        }
+                    )
         return collected

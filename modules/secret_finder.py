@@ -11,6 +11,13 @@ from urllib.parse import urljoin
 import aiohttp
 from bs4 import BeautifulSoup
 
+from .evasion import (
+    EvasionProfile,
+    build_browser_headers,
+    friendly_network_error,
+)
+from .scanner_engine import fetch_text_with_retry, http_client_timeout
+
 SEVERITY_CRITICAL = "Critical"
 SEVERITY_HIGH = "High"
 SEVERITY_MEDIUM = "Medium"
@@ -293,10 +300,12 @@ class SecretFinder:
         timeout: aiohttp.ClientTimeout | None = None,
         concurrency: int = 12,
         extra_headers: dict[str, str] | None = None,
+        evasion: EvasionProfile | None = None,
     ) -> None:
-        self._timeout = timeout or aiohttp.ClientTimeout(total=30)
+        self._timeout = timeout or http_client_timeout()
         self._concurrency = max(1, concurrency)
         self._extra_headers: dict[str, str] = dict(extra_headers or {})
+        self._evasion = evasion or EvasionProfile()
 
     @staticmethod
     def _absolute_url(base: str, href: str) -> str:
@@ -425,11 +434,6 @@ class SecretFinder:
             on_advance(): called after each unit completes.
         """
         results: list[dict] = []
-        headers = {
-            "User-Agent": "OmniScan-AI/1.0 (security research)",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            **self._extra_headers,
-        }
 
         def _advance() -> None:
             if on_advance is not None:
@@ -439,21 +443,39 @@ class SecretFinder:
                     pass
 
         try:
-            async with aiohttp.ClientSession(timeout=self._timeout) as session:
+            connector = self._evasion.aiohttp_connector(
+                ssl=True, limit=max(30, self._concurrency)
+            )
+        except RuntimeError:
+            raise
+
+        try:
+            async with aiohttp.ClientSession(
+                timeout=self._timeout, connector=connector, trust_env=False
+            ) as session:
+                page_origin = target_url
+                if "://" not in page_origin:
+                    page_origin = f"https://{page_origin}"
                 try:
-                    async with session.get(
-                        target_url, headers=headers, allow_redirects=True
-                    ) as resp:
-                        resp.raise_for_status()
-                        html = await resp.text()
-                        page_url = str(resp.url)
+                    await self._evasion.apply_jitter()
+                    page_headers = build_browser_headers(
+                        referer=page_origin,
+                        extra=self._extra_headers,
+                        evasion=self._evasion,
+                    )
+                    html, page_url = await fetch_text_with_retry(
+                        session,
+                        target_url,
+                        headers=page_headers,
+                        allow_redirects=True,
+                    )
                 except aiohttp.ClientResponseError as exc:
                     raise RuntimeError(
                         f"HTTP {exc.status} while fetching page: {target_url}"
                     ) from exc
                 except (aiohttp.ClientError, TimeoutError, OSError) as exc:
                     raise RuntimeError(
-                        f"Network error while fetching page: {exc}"
+                        friendly_network_error(exc)
                     ) from exc
 
                 try:
@@ -484,16 +506,23 @@ class SecretFinder:
                     async def _fetch_one(js_url: str) -> list[dict]:
                         async with sem:
                             try:
-                                async with session.get(
-                                    js_url, headers=headers, allow_redirects=True
-                                ) as r:
-                                    if r.status != 200:
-                                        return []
-                                    ctype = (r.headers.get("Content-Type") or "").lower()
-                                    if ctype.startswith(("image/", "video/", "audio/")):
-                                        return []
-                                    text = await r.text(errors="replace")
-                                    final_js = str(r.url)
+                                await self._evasion.apply_jitter()
+                                js_headers = build_browser_headers(
+                                    referer=page_url,
+                                    extra=self._extra_headers,
+                                    accept="*/*",
+                                    evasion=self._evasion,
+                                )
+                                text, final_js = await fetch_text_with_retry(
+                                    session,
+                                    js_url,
+                                    headers=js_headers,
+                                    allow_redirects=True,
+                                )
+                                if not (text or "").strip():
+                                    return []
+                            except aiohttp.ClientResponseError:
+                                return []
                             except (aiohttp.ClientError, TimeoutError, OSError):
                                 return []
                             except Exception:

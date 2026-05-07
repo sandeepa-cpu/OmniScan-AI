@@ -23,6 +23,9 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import aiohttp
 
+from .evasion import EvasionProfile, build_browser_headers
+from .scanner_engine import http_client_timeout
+
 ProgressCallback = Callable[[], None]
 PlanCallback = Callable[[int], None]
 
@@ -76,10 +79,12 @@ class IDORScanner:
         timeout: aiohttp.ClientTimeout | None = None,
         concurrency: int = 8,
         extra_headers: dict[str, str] | None = None,
+        evasion: EvasionProfile | None = None,
     ) -> None:
-        self._timeout = timeout or aiohttp.ClientTimeout(total=20)
+        self._timeout = timeout or http_client_timeout()
         self._concurrency = max(1, concurrency)
         self._extra_headers: dict[str, str] = dict(extra_headers or {})
+        self._evasion = evasion or EvasionProfile()
 
     @classmethod
     def _extract_pii(cls, text: str | None) -> dict[str, set[str]]:
@@ -161,10 +166,23 @@ class IDORScanner:
         )
 
     async def _fetch(
-        self, session: aiohttp.ClientSession, url: str
+        self,
+        session: aiohttp.ClientSession,
+        url: str,
+        *,
+        referer: str,
     ) -> tuple[int | None, str | None, str | None]:
+        await self._evasion.apply_jitter()
+        headers = build_browser_headers(
+            referer=referer,
+            extra=self._extra_headers,
+            accept="*/*",
+            evasion=self._evasion,
+        )
         try:
-            async with session.get(url, allow_redirects=True) as resp:
+            async with session.get(
+                url, headers=headers, allow_redirects=True
+            ) as resp:
                 text = await resp.text(errors="replace")
                 return resp.status, text, str(resp.url)
         except (aiohttp.ClientError, TimeoutError, OSError):
@@ -252,12 +270,6 @@ class IDORScanner:
         Returns rows with: severity, kind, param, base_id, test_id, status,
         similarity, url, note.
         """
-        headers = {
-            "User-Agent": "OmniScan-AI/2.0 (idor-probe)",
-            "Accept": "*/*",
-            **self._extra_headers,
-        }
-
         def _advance() -> None:
             if on_advance is not None:
                 try:
@@ -283,8 +295,21 @@ class IDORScanner:
             _advance()
             return []
 
-        async with aiohttp.ClientSession(timeout=self._timeout, headers=headers) as session:
-            baseline = await self._fetch(session, target_url)
+        raw = target_url.strip()
+        if "://" not in raw:
+            raw = f"https://{raw}"
+        parsed = urlparse(raw)
+        origin_ref = f"{parsed.scheme or 'https'}://{parsed.netloc}/"
+
+        try:
+            connector = self._evasion.aiohttp_connector(ssl=True, limit=30)
+        except RuntimeError:
+            raise
+
+        async with aiohttp.ClientSession(
+            timeout=self._timeout, connector=connector, trust_env=False
+        ) as session:
+            baseline = await self._fetch(session, target_url, referer=origin_ref)
             _advance()
             if baseline[0] is None:
                 return []
@@ -294,7 +319,9 @@ class IDORScanner:
             async def _probe(cand: dict, new_value: int) -> tuple[dict, int, str, tuple]:
                 async with sem:
                     mutated_url = self._build_mutated_url(cand, new_value)
-                    mutated = await self._fetch(session, mutated_url)
+                    mutated = await self._fetch(
+                        session, mutated_url, referer=target_url
+                    )
                 return cand, new_value, mutated_url, mutated
 
             tasks: list[asyncio.Task] = []

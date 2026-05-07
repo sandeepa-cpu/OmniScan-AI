@@ -9,8 +9,16 @@ target host. Authorized testing only.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Callable
 from urllib.parse import urlparse
+
+from .evasion import EvasionProfile, parse_socks_proxy
+from . import nmap_stealth
+from .scanner_engine import (
+    NMAP_EXECUTOR_WALL_CLOCK_SEC,
+    NMAP_STEALTH_SUBPROCESS_SEC,
+)
 
 ProgressCallback = Callable[[], None]
 PlanCallback = Callable[[int], None]
@@ -97,9 +105,20 @@ class PortScanner:
         }
     )
 
-    def __init__(self, timeout: float = 1.2, concurrency: int = 100) -> None:
+    def __init__(
+        self,
+        timeout: float = 1.2,
+        concurrency: int = 100,
+        evasion: EvasionProfile | None = None,
+        *,
+        use_nmap_stealth: bool = False,
+        nmap_spoof_mac: bool = False,
+    ) -> None:
         self._timeout = max(0.2, float(timeout))
         self._concurrency = max(1, concurrency)
+        self._evasion = evasion or EvasionProfile()
+        self._use_nmap_stealth = bool(use_nmap_stealth)
+        self._nmap_spoof_mac = bool(nmap_spoof_mac)
 
     @staticmethod
     def _hostname(url: str) -> str | None:
@@ -114,16 +133,64 @@ class PortScanner:
             return SEVERITY_LOW
         return SEVERITY_MEDIUM
 
+    async def _run_decision_engine(
+        self, host: str, target_url: str, results: list[dict]
+    ) -> None:
+        """Append follow-up rows (HTTP dirs, FTP anon, MySQL defaults) for open ports."""
+        open_rows = [r for r in results if r.get("state") == "open"]
+        if not open_rows:
+            return
+        try:
+            from .port_decision_engine import enrich_open_ports
+
+            extra = await enrich_open_ports(
+                host=host,
+                target_url=target_url,
+                open_port_rows=open_rows,
+                evasion=self._evasion,
+            )
+            if extra:
+                results.extend(extra)
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Port decision engine failed: %s", exc)
+
+    async def _tor_tcp_connect(self, host: str, port: int):
+        """SOCKS5 connect via Tor (``python-socks`` asyncio backend)."""
+        try:
+            from python_socks.async_.asyncio import Proxy  # type: ignore[import-untyped]
+            from python_socks import ProxyType  # type: ignore[import-untyped]
+        except ImportError as exc:
+            raise RuntimeError(
+                "Tor port scan requires python-socks. Install: pip install 'python-socks[asyncio]'"
+            ) from exc
+
+        h, p, rdns = parse_socks_proxy(self._evasion.tor_socks_url)
+        proxy = Proxy.create(
+            proxy_type=ProxyType.SOCKS5,
+            host=h,
+            port=p,
+            rdns=rdns,
+        )
+        return await proxy.connect(dest_host=host, dest_port=port)
+
     async def _probe(
         self, host: str, port: int, sem: asyncio.Semaphore
     ) -> dict | None:
         async with sem:
+            await self._evasion.apply_jitter()
             writer = None
+            sock = None
             try:
-                reader, writer = await asyncio.wait_for(
-                    asyncio.open_connection(host=host, port=port),
-                    timeout=self._timeout,
-                )
+                if self._evasion.use_tor:
+                    sock = await asyncio.wait_for(
+                        self._tor_tcp_connect(host, port),
+                        timeout=self._timeout,
+                    )
+                else:
+                    reader, writer = await asyncio.wait_for(
+                        asyncio.open_connection(host=host, port=port),
+                        timeout=self._timeout,
+                    )
                 return {
                     "severity": self._severity_for(port),
                     "port": port,
@@ -143,12 +210,49 @@ class PortScanner:
                         await writer.wait_closed()
                     except Exception:
                         pass
+                if sock is not None:
+                    try:
+                        sock.close()
+                    except Exception:
+                        pass
+
+    def _scan_with_nmap_sync(self, host: str, ports: list[int]) -> tuple[list[dict], int]:
+        ports_csv = ",".join(str(p) for p in ports)
+        code, stdout, blob = nmap_stealth.run_stealth_tcp_scan(
+            host,
+            ports_csv,
+            spoof_mac=self._nmap_spoof_mac,
+            timeout_sec=NMAP_STEALTH_SUBPROCESS_SEC,
+        )
+        if code != 0:
+            logging.getLogger(__name__).warning(
+                "nmap stealth port scan non-zero exit (%s): %s",
+                code,
+                blob[:500],
+            )
+        open_rows: list[dict] = []
+        for port, _nmap_svc in nmap_stealth.parse_grepable_open_ports(stdout):
+            if port not in self.COMMON_PORTS:
+                continue
+            open_rows.append(
+                {
+                    "severity": self._severity_for(port),
+                    "port": port,
+                    "service": self.COMMON_PORTS.get(port, "unknown"),
+                    "state": "open",
+                    "host": host,
+                    "probe": "nmap",
+                }
+            )
+        return open_rows, code
 
     async def scan(
         self,
         target_url: str,
         on_plan: PlanCallback | None = None,
         on_advance: ProgressCallback | None = None,
+        *,
+        decision_engine: bool = True,
     ) -> list[dict]:
         host = self._hostname(target_url)
         ports = sorted(self.COMMON_PORTS.keys())
@@ -168,6 +272,54 @@ class PortScanner:
                         pass
             return []
 
+        if self._use_nmap_stealth and not self._evasion.use_tor:
+            exe = nmap_stealth.nmap_executable()
+            if exe:
+                await self._evasion.apply_jitter()
+                loop = asyncio.get_running_loop()
+                nmap_results: list[dict] = []
+                nmap_code = -1
+                try:
+                    nmap_results, nmap_code = await asyncio.wait_for(
+                        loop.run_in_executor(
+                            None,
+                            lambda: self._scan_with_nmap_sync(host, ports),
+                        ),
+                        timeout=max(30.0, float(NMAP_EXECUTOR_WALL_CLOCK_SEC)),
+                    )
+                except asyncio.TimeoutError:
+                    logging.getLogger(__name__).warning(
+                        "nmap stealth scan exceeded executor budget (%ss); "
+                        "falling back to async TCP probes.",
+                        NMAP_EXECUTOR_WALL_CLOCK_SEC,
+                    )
+                    nmap_results, nmap_code = [], 124
+                except Exception:
+                    nmap_results, nmap_code = [], -1
+                if nmap_code == 0 or nmap_results:
+                    if on_advance is not None:
+                        for _ in ports:
+                            try:
+                                on_advance()
+                            except Exception:
+                                pass
+                    sev_rank = {SEVERITY_HIGH: 0, SEVERITY_MEDIUM: 1, SEVERITY_LOW: 2}
+                    nmap_results.sort(
+                        key=lambda r: (sev_rank.get(r["severity"], 9), r["port"])
+                    )
+                    if decision_engine and host:
+                        await self._run_decision_engine(
+                            host, target_url, nmap_results
+                        )
+                    return nmap_results
+                logging.getLogger(__name__).warning(
+                    "nmap stealth scan produced no usable result; falling back to async TCP probes."
+                )
+            else:
+                logging.getLogger(__name__).warning(
+                    "--nmap-stealth set but nmap not on PATH; falling back to async TCP probes."
+                )
+
         sem = asyncio.Semaphore(self._concurrency)
         results: list[dict] = []
         tasks = [asyncio.create_task(self._probe(host, p, sem)) for p in ports]
@@ -184,4 +336,6 @@ class PortScanner:
 
         sev_rank = {SEVERITY_HIGH: 0, SEVERITY_MEDIUM: 1, SEVERITY_LOW: 2}
         results.sort(key=lambda r: (sev_rank.get(r["severity"], 9), r["port"]))
+        if decision_engine and host:
+            await self._run_decision_engine(host, target_url, results)
         return results

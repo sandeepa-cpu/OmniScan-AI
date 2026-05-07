@@ -9,6 +9,9 @@ from urllib.parse import urlparse
 
 import aiohttp
 
+from .evasion import EvasionProfile, build_browser_headers, friendly_network_error
+from .scanner_engine import http_client_timeout
+
 ProgressCallback = Callable[[], None]
 PlanCallback = Callable[[int], None]
 
@@ -49,8 +52,13 @@ class SubdomainScanner:
         "preview",
     )
 
-    def __init__(self, timeout: aiohttp.ClientTimeout | None = None) -> None:
-        self._timeout = timeout or aiohttp.ClientTimeout(total=12)
+    def __init__(
+        self,
+        timeout: aiohttp.ClientTimeout | None = None,
+        evasion: EvasionProfile | None = None,
+    ) -> None:
+        self._timeout = timeout or http_client_timeout()
+        self._evasion = evasion or EvasionProfile()
 
     @staticmethod
     def apex_hostname(target_url: str) -> str:
@@ -72,14 +80,19 @@ class SubdomainScanner:
         self,
         session: aiohttp.ClientSession,
         fqdn: str,
+        *,
+        referer_base: str,
     ) -> dict:
-        headers = {"User-Agent": "OmniScan-AI/1.0 (security research)"}
         last_error: str | None = None
 
         for scheme in ("https", "http"):
             url = f"{scheme}://{fqdn}/"
             for method in ("HEAD", "GET"):
                 try:
+                    await self._evasion.apply_jitter()
+                    headers = build_browser_headers(
+                        referer=referer_base, evasion=self._evasion
+                    )
                     async with session.request(
                         method,
                         url,
@@ -106,9 +119,9 @@ class SubdomainScanner:
                             "alive": True,
                             "note": "http error",
                         }
-                    last_error = str(exc)
+                    last_error = friendly_network_error(exc)
                 except (aiohttp.ClientError, TimeoutError, OSError) as exc:
-                    last_error = str(exc)
+                    last_error = friendly_network_error(exc)
 
         return {
             "subdomain": fqdn,
@@ -116,7 +129,7 @@ class SubdomainScanner:
             "status": "-",
             "scheme": "-",
             "alive": False,
-            "note": (last_error or "no response")[:120],
+            "note": (last_error or "no response")[:160],
         }
 
     async def scan(
@@ -136,6 +149,7 @@ class SubdomainScanner:
         """
         apex = self.apex_hostname(target_url)
         candidates = [f"{p}.{apex}" for p in self.COMMON_PREFIXES]
+        referer_base = f"https://{apex}/"
 
         if on_plan is not None:
             try:
@@ -150,15 +164,22 @@ class SubdomainScanner:
                 except Exception:
                     pass
 
-        connector = aiohttp.TCPConnector(ssl=False, limit=20)
+        try:
+            connector = self._evasion.aiohttp_connector(ssl=False, limit=20)
+        except RuntimeError:
+            raise
+
         results: list[dict] = []
 
         async with aiohttp.ClientSession(
             timeout=self._timeout,
             connector=connector,
+            trust_env=False,
         ) as session:
             tasks: list[asyncio.Task[dict]] = [
-                asyncio.create_task(self._probe_host(session, fqdn))
+                asyncio.create_task(
+                    self._probe_host(session, fqdn, referer_base=referer_base)
+                )
                 for fqdn in candidates
             ]
             try:
@@ -172,7 +193,7 @@ class SubdomainScanner:
                             "status": "error",
                             "scheme": "-",
                             "alive": False,
-                            "note": str(exc)[:120],
+                            "note": friendly_network_error(exc)[:160],
                         }
                     results.append(row)
                     _advance()

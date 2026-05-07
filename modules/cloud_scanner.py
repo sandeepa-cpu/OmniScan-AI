@@ -15,6 +15,9 @@ from urllib.parse import urlparse
 
 import aiohttp
 
+from .evasion import EvasionProfile, build_browser_headers
+from .scanner_engine import http_client_timeout
+
 ProgressCallback = Callable[[], None]
 PlanCallback = Callable[[int], None]
 
@@ -73,9 +76,11 @@ class CloudScanner:
         self,
         timeout: aiohttp.ClientTimeout | None = None,
         concurrency: int = 25,
+        evasion: EvasionProfile | None = None,
     ) -> None:
-        self._timeout = timeout or aiohttp.ClientTimeout(total=10)
+        self._timeout = timeout or http_client_timeout()
         self._concurrency = max(1, concurrency)
+        self._evasion = evasion or EvasionProfile()
 
     @staticmethod
     def _apex_labels(url: str) -> list[str]:
@@ -168,10 +173,18 @@ class CloudScanner:
         provider: str,
         name: str,
         url: str,
+        *,
+        referer: str,
     ) -> dict | None:
         async with sem:
             try:
-                async with session.get(url, allow_redirects=False) as resp:
+                await self._evasion.apply_jitter()
+                headers = build_browser_headers(
+                    referer=referer, accept="*/*", evasion=self._evasion
+                )
+                async with session.get(
+                    url, headers=headers, allow_redirects=False
+                ) as resp:
                     body = ""
                     try:
                         raw = await resp.content.read(2048)
@@ -218,11 +231,23 @@ class CloudScanner:
             return []
 
         sem = asyncio.Semaphore(self._concurrency)
-        headers = {"User-Agent": "OmniScan-AI/1.0 (cloud-recon)"}
         results: list[dict] = []
-        async with aiohttp.ClientSession(timeout=self._timeout, headers=headers) as session:
+        raw = target_url.strip()
+        if "://" not in raw:
+            raw = f"https://{raw}"
+        p = urlparse(raw)
+        referer = f"{p.scheme or 'https'}://{p.netloc}/"
+        try:
+            connector = self._evasion.aiohttp_connector(ssl=True, limit=50)
+        except RuntimeError:
+            raise
+        async with aiohttp.ClientSession(
+            timeout=self._timeout, connector=connector, trust_env=False
+        ) as session:
             tasks = [
-                asyncio.create_task(self._probe(session, sem, provider, name, url))
+                asyncio.create_task(
+                    self._probe(session, sem, provider, name, url, referer=referer)
+                )
                 for provider, name, url in candidates
             ]
             for coro in asyncio.as_completed(tasks):

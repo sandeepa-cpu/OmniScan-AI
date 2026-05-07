@@ -17,6 +17,13 @@ from urllib.parse import urljoin, urlparse
 import aiohttp
 from bs4 import BeautifulSoup
 
+try:
+    import jsbeautifier  # type: ignore[import-untyped]
+except ImportError:
+    jsbeautifier = None
+
+from .evasion import EvasionProfile, build_browser_headers, friendly_network_error
+from .scanner_engine import http_client_timeout
 from .secret_finder import SEVERITY_HIGH, SEVERITY_LOW, SEVERITY_MEDIUM, SecretFinder, severity_for
 
 ProgressCallback = Callable[[], None]
@@ -76,6 +83,89 @@ class JSAnalyzer:
                 re.IGNORECASE,
             ),
         ),
+        (
+            "websocket_url",
+            re.compile(
+                r'''["'`](wss?://[^"'`\s]{4,512})["'`]''',
+                re.IGNORECASE,
+            ),
+        ),
+        (
+            "dynamic_import",
+            re.compile(
+                r'''\bimport\s*\(\s*["'`]([^"'`\s]{2,512})["'`]''',
+            ),
+        ),
+        (
+            "sourcemap_ref",
+            re.compile(
+                r'''//[#@]\s*sourceMappingURL=([^\s'"]+\.map)''',
+            ),
+        ),
+        (
+            "route_path_string",
+            re.compile(
+                r'''(?:path|pathname|href)\s*:\s*["'`]([/][A-Za-z0-9_\-./{}:]{2,256})["'`]''',
+            ),
+        ),
+        (
+            "process_env",
+            re.compile(r'''process\.env\.([A-Z0-9_]{2,64})'''),
+        ),
+        (
+            "api_key_literal",
+            re.compile(
+                r'''(?i)["'](?:api[_-]?key|client[_-]?secret|secret[_-]?key)["']\s*:\s*["']([^"']{8,128})["']''',
+            ),
+        ),
+        (
+            "base_url_concat",
+            re.compile(
+                r'''baseURL\s*[=:]\s*["'`](https?://[^"'`\s]{4,256})["'`]''',
+                re.IGNORECASE,
+            ),
+        ),
+        (
+            "relative_api_path",
+            re.compile(
+                r'''["'`](/[A-Za-z0-9_\-./]{3,200}(?:\?[^"'`]{0,80})?)["'`]\s*[,)]''',
+            ),
+        ),
+        (
+            "firebase_realtime_url",
+            re.compile(
+                r'''["'`](https://[a-z0-9][a-z0-9-]*\.firebaseio\.com[^"'`\s]*)["'`]''',
+                re.IGNORECASE,
+            ),
+        ),
+        (
+            "gcp_storage_url",
+            re.compile(
+                r'''["'`](https://storage\.googleapis\.com/[^"'`\s]{4,512})["'`]''',
+                re.IGNORECASE,
+            ),
+        ),
+        (
+            "aws_s3_url",
+            re.compile(
+                r'''["'`](https?://[a-z0-9][a-z0-9.-]*\.s3[.-][a-z0-9.-]*\.amazonaws\.com[^"'`\s]{0,512})["'`]''',
+                re.IGNORECASE,
+            ),
+        ),
+        (
+            "staging_dev_host",
+            re.compile(
+                r'''["'`](https?://(?:[a-z0-9-]+\.)*(?:dev|staging|uat|preview|internal|qa|test)\.[a-z0-9.-]+\.[a-z]{2,}(?:[/:?][^"'`\s]{0,320})?)["'`]''',
+                re.IGNORECASE,
+            ),
+        ),
+        (
+            "amazonaws_generic",
+            re.compile(
+                r'''["'`](https?://[a-z0-9][a-z0-9.-]*\.amazonaws\.com[^"'`\s]{4,512})["'`]''',
+                re.IGNORECASE,
+            ),
+        ),
     ]
 
     def __init__(
@@ -84,15 +174,27 @@ class JSAnalyzer:
         concurrency: int = 12,
         max_scripts: int = 60,
         extra_headers: dict[str, str] | None = None,
+        evasion: EvasionProfile | None = None,
     ) -> None:
-        self._timeout = timeout or aiohttp.ClientTimeout(total=25)
+        self._timeout = timeout or http_client_timeout()
         self._concurrency = max(1, concurrency)
         self._max_scripts = max(1, max_scripts)
         self._extra_headers: dict[str, str] = dict(extra_headers or {})
+        self._evasion = evasion or EvasionProfile()
         self._secret_finder = SecretFinder(
             timeout=self._timeout,
             extra_headers=self._extra_headers,
+            evasion=self._evasion,
         )
+
+    @staticmethod
+    def _beautify_js(text: str) -> str:
+        if jsbeautifier is None or len(text) > 1_500_000:
+            return text
+        try:
+            return str(jsbeautifier.beautify(text))
+        except Exception:
+            return text
 
     @staticmethod
     def _looks_like_js(url: str, content_type: str) -> bool:
@@ -149,7 +251,18 @@ class JSAnalyzer:
                     match_value = m.group(1) if m.groups() else m.group(0)
                     severity = SEVERITY_LOW
                     low_val = match_value.lower()
-                    if any(h in low_val for h in self._SENSITIVE_PATH_HINTS):
+                    if kind in (
+                        "api_key_literal",
+                        "websocket_url",
+                        "process_env",
+                        "firebase_realtime_url",
+                        "gcp_storage_url",
+                        "aws_s3_url",
+                        "amazonaws_generic",
+                        "staging_dev_host",
+                    ):
+                        severity = SEVERITY_MEDIUM
+                    elif any(h in low_val for h in self._SENSITIVE_PATH_HINTS):
                         severity = SEVERITY_MEDIUM
                     findings.append(
                         {
@@ -188,19 +301,27 @@ class JSAnalyzer:
         session: aiohttp.ClientSession,
         sem: asyncio.Semaphore,
         js_url: str,
-        headers: dict[str, str],
+        page_url: str,
     ) -> list[dict]:
         async with sem:
             try:
+                await self._evasion.apply_jitter()
+                hdrs = build_browser_headers(
+                    referer=page_url,
+                    extra=self._extra_headers,
+                    accept="*/*",
+                    evasion=self._evasion,
+                )
                 async with session.get(
-                    js_url, headers=headers, allow_redirects=True
+                    js_url, headers=hdrs, allow_redirects=True
                 ) as resp:
                     if resp.status != 200:
                         return []
                     ctype = resp.headers.get("Content-Type") or ""
                     if not self._looks_like_js(js_url, ctype):
                         return []
-                    text = await resp.text(errors="replace")
+                    raw_text = await resp.text(errors="replace")
+                    text = self._beautify_js(raw_text)
                     final_url = str(resp.url)
             except (aiohttp.ClientError, TimeoutError, OSError):
                 return []
@@ -219,11 +340,6 @@ class JSAnalyzer:
         on_advance: ProgressCallback | None = None,
     ) -> list[dict]:
         """Fetch page, enumerate linked JS, concurrently extract endpoints + secrets."""
-        headers = {
-            "User-Agent": "OmniScan-AI/1.0 (js-deep-analyzer)",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            **self._extra_headers,
-        }
 
         def _advance() -> None:
             if on_advance is not None:
@@ -232,10 +348,25 @@ class JSAnalyzer:
                 except Exception:
                     pass
 
-        async with aiohttp.ClientSession(timeout=self._timeout) as session:
+        try:
+            connector = self._evasion.aiohttp_connector(
+                ssl=True, limit=max(30, self._concurrency)
+            )
+        except RuntimeError:
+            raise
+
+        page_ref = target_url if "://" in target_url else f"https://{target_url}"
+
+        async with aiohttp.ClientSession(
+            timeout=self._timeout, connector=connector, trust_env=False
+        ) as session:
             try:
+                await self._evasion.apply_jitter()
+                page_headers = build_browser_headers(
+                    referer=page_ref, extra=self._extra_headers, evasion=self._evasion
+                )
                 async with session.get(
-                    target_url, headers=headers, allow_redirects=True
+                    target_url, headers=page_headers, allow_redirects=True
                 ) as resp:
                     resp.raise_for_status()
                     html = await resp.text(errors="replace")
@@ -245,7 +376,9 @@ class JSAnalyzer:
                     f"HTTP {exc.status} while fetching page: {target_url}"
                 ) from exc
             except (aiohttp.ClientError, TimeoutError, OSError) as exc:
-                raise RuntimeError(f"Network error while fetching page: {exc}") from exc
+                raise RuntimeError(
+                    friendly_network_error(exc)
+                ) from exc
 
             js_urls = self._collect_js_urls(html, page_url)
 
@@ -262,7 +395,7 @@ class JSAnalyzer:
 
             sem = asyncio.Semaphore(self._concurrency)
             tasks = [
-                asyncio.create_task(self._fetch_and_scan(session, sem, u, headers))
+                asyncio.create_task(self._fetch_and_scan(session, sem, u, page_url))
                 for u in js_urls
             ]
 
@@ -271,6 +404,8 @@ class JSAnalyzer:
                 try:
                     rows = await coro
                     results.extend(rows)
+                except (aiohttp.ClientError, TimeoutError, OSError, asyncio.CancelledError):
+                    pass
                 except Exception:
                     pass
                 _advance()

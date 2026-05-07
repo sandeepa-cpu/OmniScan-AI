@@ -15,6 +15,10 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 import aiohttp
 from bs4 import BeautifulSoup
 
+from .evasion import EvasionProfile, build_browser_headers
+from .payload_obfuscation import expand_probe_values
+from .scanner_engine import http_client_timeout
+
 ProgressCallback = Callable[[], None]
 PlanCallback = Callable[[int], None]
 
@@ -43,13 +47,17 @@ class XSSScanner:
         extra_payloads: Sequence[str] = (),
         concurrency: int = 10,
         extra_headers: dict[str, str] | None = None,
+        evasion: EvasionProfile | None = None,
+        obfuscate_payloads: bool = False,
     ) -> None:
-        self._timeout = timeout or aiohttp.ClientTimeout(total=20)
+        self._timeout = timeout or http_client_timeout()
         self._extra_payloads: tuple[str, ...] = tuple(
             p for p in extra_payloads if isinstance(p, str) and p
         )
         self._concurrency = max(1, concurrency)
         self._extra_headers: dict[str, str] = dict(extra_headers or {})
+        self._evasion = evasion or EvasionProfile()
+        self._obfuscate_payloads = bool(obfuscate_payloads)
 
     def _effective_payloads(self) -> tuple[str, ...]:
         seen: set[str] = set()
@@ -59,7 +67,18 @@ class XSSScanner:
                 continue
             seen.add(p)
             merged.append(p)
-        return tuple(merged)
+        if not self._obfuscate_payloads:
+            return tuple(merged)
+        expanded: list[str] = []
+        seen_ex: set[str] = set()
+        for p in merged:
+            for v in expand_probe_values(p, enabled=True, max_variants=4):
+                if v not in seen_ex:
+                    seen_ex.add(v)
+                    expanded.append(v)
+            if len(expanded) >= 80:
+                break
+        return tuple(expanded)
 
     @staticmethod
     def _strip_query(url: str) -> str:
@@ -72,10 +91,21 @@ class XSSScanner:
         return f"{base_url_no_query}?{qs}" if qs else base_url_no_query
 
     async def _fetch(
-        self, session: aiohttp.ClientSession, url: str, method: str = "GET"
+        self,
+        session: aiohttp.ClientSession,
+        url: str,
+        method: str = "GET",
+        *,
+        referer: str,
     ) -> tuple[str | None, str | None, int | None]:
+        await self._evasion.apply_jitter()
+        headers = build_browser_headers(
+            referer=referer, extra=self._extra_headers, evasion=self._evasion
+        )
         try:
-            async with session.request(method, url, allow_redirects=True) as resp:
+            async with session.request(
+                method, url, headers=headers, allow_redirects=True
+            ) as resp:
                 text = await resp.text(errors="replace")
                 return text, str(resp.url), resp.status
         except (aiohttp.ClientError, TimeoutError, OSError):
@@ -191,11 +221,6 @@ class XSSScanner:
           severity, kind, method, url, param, payload, note, status.
         """
         results: list[dict] = []
-        headers = {
-            "User-Agent": "OmniScan-AI/1.0 (security research)",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            **self._extra_headers,
-        }
 
         def _advance() -> None:
             if on_advance is not None:
@@ -206,8 +231,23 @@ class XSSScanner:
 
         payloads = self._effective_payloads()
 
-        async with aiohttp.ClientSession(timeout=self._timeout, headers=headers) as session:
-            html, page_url, status = await self._fetch(session, target_url)
+        raw = target_url.strip()
+        if "://" not in raw:
+            raw = f"https://{raw}"
+        parsed = urlparse(raw)
+        origin_ref = f"{parsed.scheme or 'https'}://{parsed.netloc}/"
+
+        try:
+            connector = self._evasion.aiohttp_connector(ssl=True, limit=50)
+        except RuntimeError:
+            raise
+
+        async with aiohttp.ClientSession(
+            timeout=self._timeout, connector=connector, trust_env=False
+        ) as session:
+            html, page_url, status = await self._fetch(
+                session, target_url, referer=origin_ref
+            )
             if html is None or page_url is None:
                 if on_plan is not None:
                     try:
@@ -241,7 +281,9 @@ class XSSScanner:
                         params = dict(point["base_params"])
                         params[point["param_name"]] = payload
                         test_url = self._build_url(point["action"], params)
-                        body, final_url, st = await self._fetch(session, test_url)
+                        body, final_url, st = await self._fetch(
+                            session, test_url, referer=page_url
+                        )
                     if body and payload in body:
                         hit = {
                             "severity": self._severity_for_reflection(payload),

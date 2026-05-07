@@ -1,5 +1,16 @@
 aiohttp>=3.9
+aiodns>=3.1
+PyYAML>=6.0
+aiohttp-socks>=0.8
+python-socks[asyncio]>=2.4
 requests>=2.31
 rich>=13.7
 beautifulsoup4>=4.12
 fpdf2>=2.7
+jsbeautifier>=1.15
+flask>=3.0
+flask-socketio>=5.3
+python-dotenv>=1.0
+psutil>=6.0
+# Optional: MySQL default-credential probe in port decision engine (pip install pymysql)
+pymysql>=1.1

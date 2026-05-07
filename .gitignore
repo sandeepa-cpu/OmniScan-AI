@@ -4,11 +4,14 @@
 
 # Scan output
 reports/
+loot_results.txt
+generated_exploits/
 
 # Environment / secrets
 .env
 .env.*
 *.env
+!.env.example
 
 # Python bytecode & caches
 __pycache__/
